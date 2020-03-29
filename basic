@@ -1,0 +1,53 @@
+library(tidyverse)
+library(tidytext)
+library(textrecipes)
+library(wordcloud)
+
+data("okc_text")
+str(okc_text)
+
+#word count with tidytext
+word <- okc_text %>%
+  unnest_tokens(word, essay0) %>% 
+  anti_join(stop_words) %>% 
+  count(word, sort = TRUE)
+
+
+word %>% filter(n > 100) %>% 
+  ggplot(aes(reorder(word, n), weights = n))+
+  geom_bar()+
+  coord_flip()
+
+
+##WordClouds
+##Package wordclouds
+wordcloud(word$word,word$n, max.words = 100)
+
+#using recipes ##
+
+rec <- recipe(~ . , data = okc_text) %>% 
+  step_tokenize(essay0) %>% 
+  step_stopwords(essay0) %>%
+  step_tokenfilter(essay0, max_tokens = 10) %>% 
+  step_tf(essay0)
+
+preparo <- prep(rec, okc_text)
+okc.new <- bake(preparo, okc_text)
+
+okc.new %>% select(starts_with('tf_')) %>% map(~ sum(.))
+
+
+## Sentiment analysis
+
+##Bibliotecas: AFFIN; bing, nrc
+
+affin <- get_sentiments("afinn")
+get_sentiments('bing')
+get_sentiments('nrc')
+
+word2 <- okc_text %>%
+  unnest_tokens(word, essay0) %>% 
+  anti_join(stop_words) %>% 
+  inner_join(affin)  
+
+
