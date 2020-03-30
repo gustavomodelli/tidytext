@@ -1,0 +1,23 @@
+library(tidyverse)
+library(tidytext)
+library(wordcloud)
+library(textrecipes)
+library(recipes)
+
+
+#okc_data
+data("okc_text")
+okc_text$id <- 1:nrow(okc_text)
+
+affinn <- get_sentiments('afinn')
+
+##Sentiment analysis
+okc <- okc_text %>% 
+  unnest_tokens(word, essay0) %>% 
+  anti_join(stop_words) %>% 
+  inner_join(affinn) %>% 
+  group_by(id) %>% 
+  summarise(sentiment = sum(value))
+
+#comb data
+okc_comb <- okc_text %>% left_join(okc)
