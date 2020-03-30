@@ -1,0 +1,69 @@
+library(tidyverse)
+library(recipes)
+library(textrecipes)
+library(tidytext)
+library(data.table)
+library(wordcloud)
+library(RColorBrewer) ##Color wordcloud
+
+net <- read.csv('netflix_titles.csv', stringsAsFactors = FALSE)
+str(net)
+
+
+##Count frequent words in description
+words <- net %>% 
+  unnest_tokens(word, description) %>% 
+  anti_join(stop_words) %>% 
+  filter(!word == 'â') %>% 
+  count(word, sort = TRUE)
+
+
+words %>% filter(n >= 100) %>% 
+  ggplot(aes(reorder(word, n), weights = n))+
+  geom_bar(fill = 'red')+ 
+  coord_flip()+
+  theme_classic()
+
+wordcloud(words$word, words$n, max.words = 100, colors= brewer.pal(8,"Dark2"))
+
+##listed in
+words2 <- net %>% 
+  unnest_tokens(word_list, listed_in) %>% 
+  count(word_list, sort = TRUE)
+
+ggplot(words2, aes(reorder(word_list, n), weights = n))+
+  geom_bar(fill = 'blue')+
+  coord_flip()+
+  theme_classic()
+
+## Bi-gran
+words3 <- net %>% 
+  unnest_tokens(word, listed_in, token = 'ngrams') %>% 
+  filter(!is.na(word)) %>% 
+  count(word, sort = TRUE)
+
+head(words3, 10)
+
+words3 %>% filter(n > 100) %>% 
+  ggplot(aes(reorder(word, n), weights = n))+
+  geom_bar(fill = 'red')+
+  coord_flip()+
+  theme_classic()
+
+
+## Creat token with recipes
+##Retire â
+
+words_stop <- c('â')
+
+rec <- recipe(~ . , data = net) %>% 
+  step_tokenize(description) %>% 
+  step_stopwords(description) %>% 
+  step_stopwords(description, custom_stopword_source = words_stop) %>% 
+  step_tokenfilter(description, max_tokens = 50) %>% 
+  step_tf(description)
+
+preparo <- prep(rec, net)
+net.new <- bake(preparo, net)
+
+net.new %>% select(starts_with('tf_')) %>% map(~ sum(.))
