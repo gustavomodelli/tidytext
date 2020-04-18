@@ -1,0 +1,188 @@
+library(tidyverse)
+library(tidytext)
+library(recipes)
+library(textrecipes)
+library(wordcloud)
+library(caret)
+library(pRoc)
+
+spam <- read_csv('spam.csv')
+str(spam)
+
+spam$X3 <- NULL
+spam$X4 <- NULL
+spam$X5 <- NULL
+names(spam) <- c('label','text')
+spam$label <- as.factor(spam$label)
+spam$id <- 1:nrow(spam)
+spam$text <- iconv(enc2utf8(spam$text),sub="byte")
+summary(spam)
+
+##Only 8% were spam
+spam %>% 
+  group_by(label) %>% 
+  count() %>% 
+  ggplot(aes(label, n, fill = label))+
+  geom_col()+
+  geom_label(aes(label = n))+
+  theme_classic()+
+  scale_fill_manual(values = c('blue','red'))
+
+##Top 50 words in both
+spam %>% 
+  unnest_tokens(word, text, token = 'words') %>% 
+  anti_join(stop_words) %>% 
+  group_by(label) %>% 
+  count(word, sort = TRUE) %>% 
+  top_n(50) %>% 
+  ggplot(aes(reorder(word, n), n, fill = label))+
+  geom_col()+
+  coord_flip()
+
+##Bag word
+bag <- spam %>% 
+  unnest_tokens(word, text, token = 'words') %>% 
+  anti_join(stop_words) %>% 
+  group_by(label) %>% 
+  count(word, sort = TRUE)
+
+bag_ham <- bag %>% filter(label == 'ham')
+bag_spam <- bag %>% filter(label == 'spam')
+
+wordcloud(words = bag_ham$word, freq = bag_ham$n,
+           max.words = 200, 
+           colors = brewer.pal(8, 'Dark2'))
+
+wordcloud(words = bag_spam$word, freq = bag_spam$n,
+          max.words = 200, 
+          colors = brewer.pal(8, 'Dark2'))
+
+##Sentiment analysis
+afinn <- get_sentiments('afinn')
+nrc <- get_sentiments('nrc')
+
+sent_affin <- spam %>% 
+  unnest_tokens(word, text, token = 'words') %>% 
+  anti_join(stop_words) %>% 
+  inner_join(afinn) %>% 
+  group_by(id) %>% 
+  summarise(sentiment_afinn = sum(value))
+
+##Add sentiment afinn to dataset
+spam <- spam %>% left_join(sent_affin)
+spam$sentiment_afinn[is.na(spam$sentiment_afinn)] <- 0
+
+ggplot(spam, aes(sentiment_afinn, fill = label))+
+  geom_density()+
+  theme_classic()+
+  scale_fill_manual(values = c('blue','red'))
+
+spam %>% 
+  unnest_tokens(word, text, token = 'words') %>% 
+  anti_join(stop_words) %>% 
+  inner_join(nrc) %>% 
+  group_by(label, sentiment) %>% 
+  count(sentiment) %>% 
+  ggplot(aes(reorder(sentiment,n), n, fill = label))+
+  geom_col()+
+  facet_wrap(~ label)+
+  coord_flip()
+  
+
+##Modeling using textrecipes
+##Textfeatures and token frequency
+
+rec <- recipe(label ~ . , data = spam) %>% 
+  step_mutate(
+    text2 = text
+  ) %>% 
+  step_rm(id) %>% 
+  step_textfeature(text2) %>% 
+  step_tokenize(text) %>% 
+  step_stopwords(text) %>% 
+  step_tokenfilter(text, max_tokens = 50) %>% 
+  step_tfidf(text)
+
+preparo <- prep(rec, spam)
+spam.new <- bake(preparo, spam)
+
+##Plots textfeatures
+spam.new %>% 
+  group_by(label) %>% 
+  summarise(digist = sum(textfeature_text2_n_digits),
+            n_words = sum(textfeature_text2_n_words)
+            )
+
+##Model with caret
+set.seed(123)
+index <- createDataPartition(spam.new$label, p = 0.75, list = FALSE)
+spam.train <- spam.new[index, ]
+spam.test <- spam.new[-index, ]
+
+
+set.seed(123)
+fit_control <- trainControl(## cv
+  method = "cv",
+  number = 5,
+  summaryFunction = twoClassSummary,
+  classProbs = TRUE,
+  allowParallel = TRUE)
+
+
+##Lasso
+set.seed(123)
+spam.glm <- train(label ~ .,
+                    data = spam.train,
+                    method = "glmnet",
+                    metric = 'ROC',
+                    trControl = fit_control)
+
+spam.glm
+plot(varImp(spam.glm), 20)
+predito <- predict(spam.glm, spam.test)
+confusionMatrix(predito, spam.test$label)
+
+
+##Random Forest
+set.seed(123)
+spam.rf <- train(label ~ .,
+                  data = spam.train,
+                  method = "ranger",
+                  metric = 'ROC',
+                  importance = 'impurity',
+                  trControl = fit_control)
+
+plot(varImp(spam.rf), 20)
+predito <- predict(spam.rf, spam.test)
+confusionMatrix(predito, spam.test$label)
+
+
+##ggplot acuracy
+conf_matrix <- as.data.frame(table(predito, spam.test$label))
+conf_matrix <- conf_matrix %>% rename(observed = Var2)
+
+ggplot(conf_matrix, aes(predito, observed, fill = Freq))+
+  geom_tile()+
+  geom_label(aes(label = Freq))+
+  scale_fill_gradient(low = "#ff7f50",
+                      high = "#003767",
+                      trans = "log")
+
+
+##XgbTree
+set.seed(123)
+spam.xgb <- train(label ~ .,
+                 data = spam.train,
+                 method = "xgbTree",
+                 metric = 'ROC',
+                 trControl = fit_control)
+
+spam.xgb
+plot(varImp(spam.xgb), 20)
+predito <- predict(spam.xgb, spam.test)
+confusionMatrix(predito, spam.test$label)
+
+##ROC
+predito <- predict(spam.xgb, spam.test, type = 'prob')
+ROC <- roc(spam.test$label, predito[,2], auc = TRUE)
+plot.roc(ROC, print.auc = TRUE)
