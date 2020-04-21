@@ -1,0 +1,68 @@
+library(tidyverse)
+library(tidytext)
+library(textrecipes)
+library(qdap)
+library(wordcloud)
+
+##Sentiment analysis with qdap
+
+coffee <- read_csv('coffe.csv')
+str(coffee)
+
+coffee <- coffee %>% 
+  select(-id) %>% 
+  rename(id = X1)
+
+##extract a polarity with qdap
+pol <- polarity(coffee$text)
+
+pol <- as.data.frame(pol$all)
+pol$id <- 1:nrow(pol)
+
+pol <- pol %>% select(id, polarity)
+
+##Join Polariry to coffee
+coffee <- coffee %>% left_join(pol)
+
+##Polarity Plot
+ggplot(coffee, aes(polarity))+
+  geom_histogram(fill = 'darkred')
+
+##Preprocess word with tidy text to wordcloud
+
+negative <- coffee %>% 
+  filter(polarity < 0) %>% 
+  unnest_tokens(word, text) %>% 
+  filter(!word %in% c(1:1000, 'rt','ed','coffee','1,000')) %>% 
+  anti_join(stop_words) %>% 
+  count(word, sort = TRUE)
+
+wordcloud(negative$word, negative$n, max.words = 100, colors= brewer.pal(8,"Dark2"))
+
+positive <- coffee %>% 
+  filter(polarity > 0) %>% 
+  unnest_tokens(word, text) %>% 
+  filter(!word %in% c(1:1000, 'rt','ed','coffee','1,000')) %>% 
+  anti_join(stop_words) %>% 
+  count(word, sort = TRUE)
+
+wordcloud(positive$word, positive$n, max.words = 100, colors= brewer.pal(8,"Dark2"))
+
+
+my_words <- c(1:1000, 'http','rt','ed','1,000','coffee','https',
+              '00a0','00aC','00b1')
+
+##Tokens associated with high score
+rec <- recipe(polarity ~ text, data = coffee) %>% 
+  step_tokenize(text) %>% 
+  step_stopwords(text) %>% 
+  step_stopwords(text, custom_stopword_source = my_words) %>% 
+  step_tokenfilter(text, maxtokens = 100) %>% 
+  step_tfidf(text) %>% 
+  step_zv(all_predictors())
+
+preparo <- prep(rec, coffee)
+coffee.new <- bake(preparo, coffee)
+
+model <- lm(polarity ~ . , data = coffee.new)
+summary(model)
