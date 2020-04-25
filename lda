@@ -1,0 +1,35 @@
+library(tidyverse)
+library(tidytext)
+library(textrecipes)
+library(qdap)
+
+##Teste lda
+data("raj")
+str(raj)
+
+raj <- raj %>% 
+  mutate(
+    person = fct_lump_prop(person, prop = 0.05)
+  )
+
+rec <- recipe(person ~ dialogue, data = raj) %>% 
+       step_lda(dialogue, num_topics = 4)
+
+preparo <- prep(rec, raj)
+raj.new <- bake(preparo, raj)
+
+raj_long <- raj.new %>% 
+  pivot_longer(
+    cols = -person,
+    names_to = 'group_lda',
+    values_to = 'lda'
+  )
+
+raj_long <- raj_long %>% 
+  group_by(person, group_lda) %>% 
+  summarise(lda = sum(lda))
+
+ggplot(raj_long, aes(reorder(group_lda, lda), lda, fill = person))+
+  geom_col()+
+  coord_flip()+
+  facet_wrap(~ person)
