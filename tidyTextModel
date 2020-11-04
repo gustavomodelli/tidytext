@@ -1,0 +1,155 @@
+library(tidyverse)
+library(tidytext)
+library(textrecipes)
+library(tidymodels)
+library(janitor)
+library(wordcloud)
+library(vip)
+library(discrim)
+
+##-- Load Data
+best <- read_csv('bestsellers.csv')
+best <- best %>% clean_names()
+
+best %>% str()
+
+
+##Best authros
+best %>% 
+  group_by(author) %>% 
+  summarise(total_score = mean(user_rating)) %>% 
+  arrange(desc(total_score)) %>% 
+  ggplot(aes(author, total_score))+
+  geom_col()
+
+##Outcome
+ggplot(best, aes(user_rating))+
+  geom_histogram(fill = 'red')
+
+##Temas
+basic_stop <- c('books', 'book', 'edition')
+
+rec <- recipe(~ name, data = best) %>% 
+  step_mutate(
+    name = str_remove_all(name, '[0-9]')
+  ) %>% 
+  step_tokenize(name) %>% 
+  step_stopwords(name) %>% 
+  step_stopwords(name, custom_stopword_source = basic_stop) %>% 
+  step_tokenfilter(name, max_tokens = 100) %>% 
+  step_tf(name)
+
+new <- rec %>% prep() %>% juice()
+
+##Most words
+new %>% 
+  pivot_longer(
+    cols = contains('tf_name')
+  ) %>% 
+  group_by(name) %>% 
+  count(value) %>% 
+  mutate(name = str_replace(name, 'tf_name_', '')) %>% 
+  filter(value == 1) %>% 
+  ggplot(aes(reorder(name, n), n))+
+  geom_col()+
+  coord_flip()
+
+world <- new %>% 
+  pivot_longer(
+    cols = contains('tf_name')
+  ) %>% 
+  group_by(name) %>% 
+  count(value) %>% 
+  mutate(name = str_replace(name, 'tf_name_', '')) %>% 
+  filter(value == 1)
+
+
+wordcloud(world$name, freq = world$n, max.words = 100, colors= brewer.pal(8,"Dark2"))
+
+##by price
+ggplot(best, aes(price, user_rating))+
+  geom_point()
+
+ggplot(best, aes(genre, user_rating, fill = genre))+
+  geom_boxplot()
+
+
+##A model ---------------------------------------
+split <- initial_split(best, prop = 0.80, strata = 'user_rating')
+best_train <- training(split)
+best_test <- testing(split)
+
+
+##R recipe ----------------------------------
+basic_stop <- c('books', 'book', 'edition')
+
+rec_lasso <- recipe(user_rating ~ . , data = best_train) %>% 
+  step_rm(author) %>% 
+  step_mutate(
+    name = str_remove_all(name, '[0-9]')
+  ) %>% 
+  step_tokenize(name) %>% 
+  step_stopwords(name) %>% 
+  step_stopwords(name, custom_stopword_source = basic_stop) %>% 
+  step_ngram(name, min_num_tokens = 2, num_tokens = 3) %>% 
+  step_tokenfilter(name, max_tokens = 100) %>% 
+  step_tfidf(name) %>% 
+  step_dummy(all_nominal()) %>% 
+  step_zv(all_predictors())
+
+##-- check tokens ----------------------
+
+new <- rec_lasso %>% prep() %>% juice()
+
+
+##Model ----------------------
+
+model_lasso <- linear_reg(penalty = tune(), mixture = tune()) %>% 
+  set_engine('glmnet')
+
+
+##Workflow --------------------
+
+work_lasso <- workflow() %>% 
+  add_recipe(rec_lasso) %>% 
+  add_model(model_lasso)
+
+##-- folds --------------------
+
+folds <- bootstraps(best_train, times = 5)
+
+## --- Tune --------------------
+
+tune_lasso <- tune_grid(
+  work_lasso,
+  resamples = folds,
+  grid = 10,
+  metrics = metric_set(rmse, rsq)
+)
+
+
+## -- Show best -----------------
+show_best(tune_lasso)
+best_lasso <- select_best(tune_lasso)
+
+
+## --- Test ----------------------
+
+test01 <- work_lasso %>% 
+  finalize_workflow(best_lasso) %>% 
+  last_fit(split)
+
+test01 %>% collect_metrics()
+
+
+test01 %>% collect_predictions() %>% 
+  ggplot(aes(.pred, user_rating))+
+  geom_point()
+
+## -- Final --------------------
+
+final01 <- work_lasso %>% 
+  finalize_workflow(best_lasso) %>% 
+  fit(best_train)
+
+final01 %>% pull_workflow_fit() %>%  vip(num_features = 50)
